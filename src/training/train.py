@@ -11,6 +11,9 @@ from src.core.deep_cfr import DeepCFRAgent
 from src.core.model import set_verbose, encode_state
 from src.utils.logging import log_game_error
 from src.utils.settings import STRICT_CHECKING, set_strict_checking
+from tqdm import tqdm
+import wandb
+from src.utils.wandb_utils import init_wandb, log_metrics, log_model, finish
 
 class RandomAgent:
     """Simple random agent for poker that ensures valid bet sizing."""
@@ -188,10 +191,23 @@ def evaluate_against_random(agent, num_games=500, num_players=6):
 
 def train_deep_cfr(num_iterations=1000, traversals_per_iteration=200, 
                    num_players=6, player_id=0, save_dir="models", 
-                   log_dir="logs/deepcfr", verbose=False):
+                   log_dir="logs/deepcfr", verbose=False, use_wandb=True,
+                   wandb_project="deepcfr-poker", wandb_mode="online"):
     """
     Train a Deep CFR agent in a 6-player No-Limit Texas Hold'em game
     against 5 random opponents.
+    
+    Args:
+        num_iterations: Number of CFR iterations
+        traversals_per_iteration: Number of game traversals per iteration
+        num_players: Number of players in the game
+        player_id: ID of the player to train
+        save_dir: Directory to save models
+        log_dir: Directory for TensorBoard logs
+        verbose: Enable verbose output
+        use_wandb: Whether to use Weights & Biases for logging
+        wandb_project: WandB project name
+        wandb_mode: WandB mode ("online", "offline", "disabled")
     """
     # Import tensorboard
     from torch.utils.tensorboard import SummaryWriter
@@ -205,6 +221,20 @@ def train_deep_cfr(num_iterations=1000, traversals_per_iteration=200,
     
     # Initialize tensorboard writer
     writer = SummaryWriter(log_dir)
+    
+    # Initialize WandB if enabled
+    if use_wandb:
+        # Configure WandB
+        config = {
+            "model_type": "DeepCFR",
+            "training_mode": "basic",
+            "player_id": player_id,
+            "num_players": num_players,
+            "iterations": num_iterations,
+            "traversals_per_iteration": traversals_per_iteration,
+            "device": 'cuda' if torch.cuda.is_available() else 'cpu'
+        }
+        init_wandb(config, project_name=wandb_project, mode=wandb_mode)
     
     # Initialize the agent
     agent = DeepCFRAgent(player_id=player_id, num_players=num_players, 
@@ -223,6 +253,10 @@ def train_deep_cfr(num_iterations=1000, traversals_per_iteration=200,
     profits.append(initial_profit)
     print(f"Initial average profit per game: {initial_profit:.2f}")
     writer.add_scalar('Performance/Profit', initial_profit, 0)
+    
+    # Log to WandB
+    if use_wandb:
+        wandb.log({"Performance/Profit": initial_profit}, step=0)
     
     # Checkpoint frequency
     checkpoint_frequency = 100  # Save a checkpoint every 100 iterations
@@ -254,6 +288,10 @@ def train_deep_cfr(num_iterations=1000, traversals_per_iteration=200,
         traversal_time = time.time() - start_time
         writer.add_scalar('Time/Traversal', traversal_time, iteration)
         
+        # Log to WandB
+        if use_wandb:
+            wandb.log({"Time/Traversal": traversal_time}, step=iteration)
+        
         # Train advantage network
         print("  Training advantage network...")
         adv_loss = agent.train_advantage_network()
@@ -264,6 +302,13 @@ def train_deep_cfr(num_iterations=1000, traversals_per_iteration=200,
         writer.add_scalar('Loss/Advantage', adv_loss, iteration)
         writer.add_scalar('Memory/Advantage', len(agent.advantage_memory), iteration)
         
+        # Log to WandB
+        if use_wandb:
+            wandb.log({
+                "Loss/Advantage": adv_loss,
+                "Memory/Advantage": len(agent.advantage_memory)
+            }, step=iteration)
+        
         # Every few iterations, train the strategy network and evaluate
         if iteration % 10 == 0 or iteration == num_iterations:
             print("  Training strategy network...")
@@ -271,12 +316,20 @@ def train_deep_cfr(num_iterations=1000, traversals_per_iteration=200,
             print(f"  Strategy network loss: {strat_loss:.6f}")
             writer.add_scalar('Loss/Strategy', strat_loss, iteration)
             
+            # Log to WandB
+            if use_wandb:
+                wandb.log({"Loss/Strategy": strat_loss}, step=iteration)
+            
             # Evaluate the agent
             print("  Evaluating agent...")
             avg_profit = evaluate_against_random(agent, num_games=500, num_players=num_players)
             profits.append(avg_profit)
             print(f"  Average profit per game: {avg_profit:.2f}")
             writer.add_scalar('Performance/Profit', avg_profit, iteration)
+            
+            # Log to WandB
+            if use_wandb:
+                wandb.log({"Performance/Profit": avg_profit}, step=iteration)
             
             # Save the model
             #model_path = f"{save_dir}/deep_cfr_iter_{iteration}.pt"
@@ -294,13 +347,30 @@ def train_deep_cfr(num_iterations=1000, traversals_per_iteration=200,
                 'profits': profits
             }, checkpoint_path)
             print(f"  Checkpoint saved to {checkpoint_path}")
+            
+            # Log model to WandB
+            if use_wandb:
+                log_model(
+                    checkpoint_path, 
+                    f"checkpoint_iter_{iteration}", 
+                    f"DeepCFR checkpoint at iteration {iteration}"
+                )
         
         elapsed = time.time() - start_time
         writer.add_scalar('Time/Iteration', elapsed, iteration)
+        
+        # Log to WandB
+        if use_wandb:
+            wandb.log({"Time/Iteration": elapsed}, step=iteration)
+        
         print(f"  Iteration completed in {elapsed:.2f} seconds")
         print(f"  Advantage memory size: {len(agent.advantage_memory)}")
         print(f"  Strategy memory size: {len(agent.strategy_memory)}")
         writer.add_scalar('Memory/Strategy', len(agent.strategy_memory), iteration)
+        
+        # Log to WandB
+        if use_wandb:
+            wandb.log({"Memory/Strategy": len(agent.strategy_memory)}, step=iteration)
         
         # Commit the tensorboard logs
         writer.flush()
@@ -311,6 +381,29 @@ def train_deep_cfr(num_iterations=1000, traversals_per_iteration=200,
     avg_profit = evaluate_against_random(agent, num_games=1000)
     print(f"Final performance: Average profit per game: {avg_profit:.2f}")
     writer.add_scalar('Performance/FinalProfit', avg_profit, 0)
+    
+    # Log to WandB
+    if use_wandb:
+        wandb.log({"Performance/FinalProfit": avg_profit})
+        
+        # Create a final model artifact
+        final_checkpoint_path = f"{save_dir}/checkpoint_final.pt"
+        torch.save({
+            'iteration': num_iterations,
+            'advantage_net': agent.advantage_net.state_dict(),
+            'strategy_net': agent.strategy_net.state_dict(),
+            'losses': losses,
+            'profits': profits
+        }, final_checkpoint_path)
+        
+        log_model(
+            final_checkpoint_path, 
+            "checkpoint_final", 
+            f"Final DeepCFR checkpoint after {num_iterations} iterations"
+        )
+        
+        # Finish the WandB run
+        finish()
     
     # Close the tensorboard writer
     writer.close()
@@ -577,9 +670,9 @@ def train_against_checkpoint(checkpoint_path, additional_iterations=1000,
         
         # If it's the trained agent's turn
         if current_player == self.player_id:
-            legal_action_ids = self.get_legal_action_ids(state)
+            legal_action_types = self.get_legal_action_types(state)
             
-            if not legal_action_ids:
+            if not legal_action_types:
                 if verbose:
                     print(f"WARNING: No legal actions found for player {current_player} at depth {depth}")
                 return 0
@@ -590,49 +683,50 @@ def train_against_checkpoint(checkpoint_path, additional_iterations=1000,
             # Get advantages from network
             with torch.no_grad():
                 advantages = self.advantage_net(state_tensor.unsqueeze(0))[0]
-                
+                advantages_np = advantages.cpu().numpy()[0]  # Get the first batch item
+            
             # Use regret matching to compute strategy
-            advantages_np = advantages.cpu().numpy()
             advantages_masked = np.zeros(self.num_actions)
-            for a in legal_action_ids:
+            for a in legal_action_types:
                 advantages_masked[a] = max(advantages_np[a], 0)
                 
             # Choose an action based on the strategy
-            if sum(advantages_masked) > 0:
-                strategy = advantages_masked / sum(advantages_masked)
+            advantages_sum = float(np.sum(advantages_masked))
+            if advantages_sum > 0:
+                strategy = advantages_masked / advantages_sum
             else:
                 strategy = np.zeros(self.num_actions)
-                for a in legal_action_ids:
-                    strategy[a] = 1.0 / len(legal_action_ids)
+                for a in legal_action_types:
+                    strategy[a] = 1.0 / len(legal_action_types)
             
             # Choose actions and traverse
             action_values = np.zeros(self.num_actions)
-            for action_id in legal_action_ids:
+            for action_type in legal_action_types:
                 try:
-                    pokers_action = self.action_id_to_pokers_action(action_id, state)
+                    pokers_action = self.action_type_to_pokers_action(action_type, state)
                     new_state = state.apply_action(pokers_action)
                     
                     # Check if the action was valid
                     if new_state.status != pkrs.StateStatus.Ok:
                         if verbose:
-                            print(f"WARNING: Invalid action {action_id} at depth {depth}. Status: {new_state.status}")
+                            print(f"WARNING: Invalid action {action_type} at depth {depth}. Status: {new_state.status}")
                         continue
                         
-                    action_values[action_id] = self.cfr_traverse(new_state, iteration, opponent_agents, depth + 1)
+                    action_values[action_type] = self.cfr_traverse(new_state, iteration, opponent_agents, depth + 1)
                 except Exception as e:
                     if verbose:
-                        print(f"ERROR in traversal for action {action_id}: {e}")
-                    action_values[action_id] = 0
+                        print(f"ERROR in traversal for action {action_type}: {e}")
+                    action_values[action_type] = 0
             
             # Compute counterfactual regrets and add to memory
-            ev = sum(strategy[a] * action_values[a] for a in legal_action_ids)
+            ev = float(sum(strategy[a] * action_values[a] for a in legal_action_types))
             
             # Calculate normalization factor
-            max_abs_val = max(abs(max(action_values)), abs(min(action_values)), 1.0)
+            max_abs_val = max(np.abs(np.max(action_values)), np.abs(np.min(action_values)), 1.0)
             
-            for action_id in legal_action_ids:
+            for action_type in legal_action_types:
                 # Calculate regret
-                regret = action_values[action_id] - ev
+                regret = action_values[action_type] - ev
                 
                 # Normalize and clip regret
                 normalized_regret = regret / max_abs_val
@@ -640,22 +734,31 @@ def train_against_checkpoint(checkpoint_path, additional_iterations=1000,
                 
                 # Apply scaling
                 scale_factor = np.sqrt(iteration) if iteration > 1 else 1.0
+                weighted_regret = clipped_regret * scale_factor
                 
-                self.advantage_memory.append((
-                    encode_state(state, self.player_id),  # Encode from this agent's perspective
-                    action_id,
-                    clipped_regret * scale_factor
-                ))
+                # Store in prioritized memory with regret magnitude as priority
+                priority = abs(weighted_regret) + 0.01 # Add small constant
+                
+                self.advantage_memory.add((
+                    encode_state(state, self.player_id),
+                    np.zeros(20), # Placeholder for opponent features
+                     action_type,
+                    0.0, # Placeholder for bet size
+                    weighted_regret
+                ), priority)
             
             # Add to strategy memory
             strategy_full = np.zeros(self.num_actions)
-            for a in legal_action_ids:
+            for a in legal_action_types:
                 strategy_full[a] = strategy[a]
             
+            # Add placeholders for opponent features and bet size (ensure 5 elements)
             self.strategy_memory.append((
-                encode_state(state, self.player_id),  # Encode from this agent's perspective
-                strategy_full,
-                iteration
+                encode_state(state, self.player_id), # 1. state
+                np.zeros(20),                       # 2. opponent_features placeholder
+                strategy_full,                      # 3. strategy
+                0.0,                                # 4. bet_size placeholder
+                iteration                           # 5. iteration
             ))
             
             return ev
@@ -990,9 +1093,9 @@ def train_with_mixed_checkpoints(checkpoint_dir, training_model_prefix="t_",
         
         # If it's the trained agent's turn
         if current_player == self.player_id:
-            legal_action_ids = self.get_legal_action_ids(state)
+            legal_action_types = self.get_legal_action_types(state)
             
-            if not legal_action_ids:
+            if not legal_action_types:
                 if verbose:
                     print(f"WARNING: No legal actions found for player {current_player} at depth {depth}")
                 return 0
@@ -1005,47 +1108,47 @@ def train_with_mixed_checkpoints(checkpoint_dir, training_model_prefix="t_",
                 advantages = self.advantage_net(state_tensor.unsqueeze(0))[0]
                 
             # Use regret matching to compute strategy
-            advantages_np = advantages.cpu().numpy()
+            advantages_np = advantages.cpu().numpy()[0]
             advantages_masked = np.zeros(self.num_actions)
-            for a in legal_action_ids:
+            for a in legal_action_types:
                 advantages_masked[a] = max(advantages_np[a], 0)
                 
             # Choose an action based on the strategy
-            if sum(advantages_masked) > 0:
-                strategy = advantages_masked / sum(advantages_masked)
+            if np.sum(advantages_masked) > 0:
+                strategy = advantages_masked / np.sum(advantages_masked)
             else:
                 strategy = np.zeros(self.num_actions)
-                for a in legal_action_ids:
-                    strategy[a] = 1.0 / len(legal_action_ids)
+                for a in legal_action_types:
+                    strategy[a] = 1.0 / len(legal_action_types)
             
             # Choose actions and traverse
             action_values = np.zeros(self.num_actions)
-            for action_id in legal_action_ids:
+            for action_type in legal_action_types:
                 try:
-                    pokers_action = self.action_id_to_pokers_action(action_id, state)
+                    pokers_action = self.action_type_to_pokers_action(action_type, state)
                     new_state = state.apply_action(pokers_action)
                     
                     # Check if the action was valid
                     if new_state.status != pkrs.StateStatus.Ok:
                         if verbose:
-                            print(f"WARNING: Invalid action {action_id} at depth {depth}. Status: {new_state.status}")
+                            print(f"WARNING: Invalid action {action_type} at depth {depth}. Status: {new_state.status}")
                         continue
                         
-                    action_values[action_id] = self.cfr_traverse(new_state, iteration, opponent_agents, depth + 1)
+                    action_values[action_type] = self.cfr_traverse(new_state, iteration, opponent_agents, depth + 1)
                 except Exception as e:
                     if verbose:
-                        print(f"ERROR in traversal for action {action_id}: {e}")
-                    action_values[action_id] = 0
+                        print(f"ERROR in traversal for action {action_type}: {e}")
+                    action_values[action_type] = 0
             
             # Compute counterfactual regrets and add to memory
-            ev = sum(strategy[a] * action_values[a] for a in legal_action_ids)
+            ev = sum(strategy[a] * action_values[a] for a in legal_action_types)
             
             # Calculate normalization factor
-            max_abs_val = max(abs(max(action_values)), abs(min(action_values)), 1.0)
+            max_abs_val = max(np.abs(np.max(action_values)), np.abs(np.min(action_values)), 1.0)
             
-            for action_id in legal_action_ids:
+            for action_type in legal_action_types:
                 # Calculate regret
-                regret = action_values[action_id] - ev
+                regret = action_values[action_type] - ev
                 
                 # Normalize and clip regret
                 normalized_regret = regret / max_abs_val
@@ -1054,21 +1157,26 @@ def train_with_mixed_checkpoints(checkpoint_dir, training_model_prefix="t_",
                 # Apply scaling
                 scale_factor = np.sqrt(iteration) if iteration > 1 else 1.0
                 
-                self.advantage_memory.append((
-                    encode_state(state, self.player_id),  # Encode from this agent's perspective
-                    action_id,
+                self.advantage_memory.add((
+                    encode_state(state, self.player_id),
+                    np.zeros(20), # Placeholder for opponent features
+                    action_type,
+                    0.0, # Placeholder for bet size
                     clipped_regret * scale_factor
-                ))
+                ), abs(clipped_regret * scale_factor) + 0.01)
             
             # Add to strategy memory
             strategy_full = np.zeros(self.num_actions)
-            for a in legal_action_ids:
+            for a in legal_action_types:
                 strategy_full[a] = strategy[a]
             
+            # Add placeholders for opponent features and bet size (ensure 5 elements)
             self.strategy_memory.append((
-                encode_state(state, self.player_id),  # Encode from this agent's perspective
-                strategy_full,
-                iteration
+                encode_state(state, self.player_id), # 1. state
+                np.zeros(20),                       # 2. opponent_features placeholder
+                strategy_full,                      # 3. strategy
+                0.0,                                # 4. bet_size placeholder
+                iteration                           # 5. iteration
             ))
             
             return ev
@@ -1338,7 +1446,22 @@ if __name__ == "__main__":
     parser.add_argument('--refresh-interval', type=int, default=1000, help='Interval to refresh opponent pool')
     parser.add_argument('--num-opponents', type=int, default=5, help='Number of checkpoint opponents to select')
     parser.add_argument('--strict', action='store_true', help='Enable strict error checking that raises exceptions for invalid game states')
+    
+    # Add WandB arguments
+    parser.add_argument('--use-wandb', action='store_true', help='Use Weights & Biases for logging')
+    parser.add_argument('--no-wandb', action='store_true', help='Disable Weights & Biases logging')
+    parser.add_argument('--wandb-project', type=str, default='deepcfr-poker', help='WandB project name')
+    parser.add_argument('--wandb-entity', type=str, default=None, help='WandB entity name')
+    parser.add_argument('--wandb-mode', type=str, default='online', 
+                      choices=['online', 'offline', 'disabled'], 
+                      help='WandB logging mode')
+    parser.add_argument('--wandb-tags', type=str, nargs='+', default=[], help='Tags for WandB run')
+    
     args = parser.parse_args()
+    
+    # Determine whether to use WandB based on args
+    # If --no-wandb is specified, disable WandB even if --use-wandb is specified
+    use_wandb = args.use_wandb and not args.no_wandb
 
     # Strict training for debug
     set_strict_checking(args.strict)
@@ -1382,6 +1505,9 @@ if __name__ == "__main__":
         print(f"Logs will be saved to: {args.log_dir}")
         print(f"Models will be saved to: {args.save_dir}")
         
+        if use_wandb:
+            print(f"Using Weights & Biases for logging (project: {args.wandb_project}, mode: {args.wandb_mode})")
+        
         # Train the Deep CFR agent
         agent, losses, profits = train_deep_cfr(
             num_iterations=args.iterations,
@@ -1390,7 +1516,10 @@ if __name__ == "__main__":
             player_id=0,
             save_dir=args.save_dir,
             log_dir=args.log_dir,
-            verbose=args.verbose
+            verbose=args.verbose,
+            use_wandb=use_wandb,
+            wandb_project=args.wandb_project,
+            wandb_mode=args.wandb_mode
         )
     
     print("\nTraining Summary:")
@@ -1403,3 +1532,5 @@ if __name__ == "__main__":
     print("\nTo view training progress:")
     print(f"Run: tensorboard --logdir={args.log_dir}")
     print("Then open http://localhost:6006 in your browser")
+    if use_wandb:
+        print(f"WandB dashboard: https://wandb.ai/{args.wandb_entity or 'your-entity'}/{args.wandb_project}")

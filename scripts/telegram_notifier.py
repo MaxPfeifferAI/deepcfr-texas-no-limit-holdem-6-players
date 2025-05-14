@@ -12,6 +12,7 @@ class TelegramNotifier:
         """
         Initialize the Telegram notifier.
         If token and chat_id are not provided, they will be read from environment variables.
+        If no credentials are available, creates a dummy notifier that does nothing.
         """
         # Load environment variables
         load_dotenv()
@@ -20,12 +21,13 @@ class TelegramNotifier:
         self.token = token or os.getenv('TELEGRAM_BOT_TOKEN')
         self.chat_id = chat_id or os.getenv('TELEGRAM_CHAT_ID')
         
-        # Validate credentials were loaded
-        if not self.token:
-            raise ValueError("Telegram bot token not provided and not found in environment variables")
-        if not self.chat_id:
-            raise ValueError("Telegram chat ID not provided and not found in environment variables")
+        # If no credentials, create dummy notifier
+        if not self.token or not self.chat_id:
+            print("No Telegram credentials found - notifications disabled")
+            self.dummy = True
+            return
             
+        self.dummy = False
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.message_count = 0
         self.last_message_time = 0
@@ -37,6 +39,9 @@ class TelegramNotifier:
     
     def send_message(self, message, force=False):
         """Send a message to the Telegram chat."""
+        if self.dummy:
+            return True
+            
         # Rate limiting to avoid Telegram API restrictions
         current_time = time.time()
         if not force and current_time - self.last_message_time < self.rate_limit:
@@ -61,6 +66,9 @@ class TelegramNotifier:
     
     def alert_illegal_action(self, iteration, player_id, action, state):
         """Send alert about an illegal action."""
+        if self.dummy:
+            return True
+            
         message = f"⚠️ <b>ILLEGAL ACTION DETECTED</b> ⚠️\n\n"
         message += f"Iteration: {iteration}\n"
         message += f"Player: {player_id}\n"
@@ -72,10 +80,11 @@ class TelegramNotifier:
         
         return self.send_message(message)
     
-    # In telegram_notifier.py, update the alert_state_error method:
-
     def alert_state_error(self, iteration, status, state_before, is_training_agent=False):
         """Send enhanced alert about a state error with detailed betting information."""
+        if self.dummy:
+            return True
+            
         message = f"🚨 <b>STATE ERROR DETECTED</b> 🚨\n\n"
         message += f"Iteration: {iteration}\n"
         message += f"Status: {status}\n"
@@ -128,6 +137,9 @@ class TelegramNotifier:
     
     def alert_zero_reward_games(self, iteration, zero_rewards, total_games):
         """Send alert about games with zero rewards."""
+        if self.dummy:
+            return True
+            
         message = f"⚠️ <b>ZERO REWARD GAMES DETECTED</b> ⚠️\n\n"
         message += f"Iteration: {iteration}\n"
         message += f"Zero Reward Games: {zero_rewards}/{total_games}\n"
@@ -137,6 +149,9 @@ class TelegramNotifier:
     
     def send_training_progress(self, iteration, profit_vs_models, profit_vs_random):
         """Send periodic training summary."""
+        if self.dummy:
+            return True
+            
         runtime = datetime.now() - self.training_start_time
         hours = runtime.total_seconds() // 3600
         minutes = (runtime.total_seconds() % 3600) // 60
@@ -151,6 +166,9 @@ class TelegramNotifier:
 
     def debug_bet_calculation(self, state, action_id, raise_amount, iteration):
         """Send detailed bet calculation information."""
+        if self.dummy:
+            return True
+            
         player_state = state.players_state[state.current_player]
         player_stake = player_state.stake
         player_bet = player_state.bet_chips

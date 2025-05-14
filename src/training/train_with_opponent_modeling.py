@@ -7,8 +7,9 @@ import random
 import time
 import argparse
 from torch.utils.tensorboard import SummaryWriter
-from src.opponent_modeling.deep_cfr_with_opponent_modeling import DeepCFRAgentWithOpponentModeling
-from src.core.model import set_verbose
+import wandb  # Add WandB import
+from src.utils.wandb_utils import init_wandb, log_metrics, log_model, finish  # Import WandB utilities
+from src.opponent_modeling.deep_cfr_with_opponent_modeling import DeepCFRAgentWithOpponentModeling, set_verbose
 from scripts.telegram_notifier import TelegramNotifier
 
 class RandomAgent:
@@ -184,9 +185,26 @@ def train_deep_cfr_with_opponent_modeling(
     player_id=0, 
     save_dir="models", 
     log_dir="logs/deepcfr_opponent_modeling", 
-    verbose=False
+    verbose=False,
+    use_wandb=True,
+    wandb_project="deepcfr-poker",
+    wandb_mode="online"
 ):
-    """Train a Deep CFR agent with opponent modeling."""
+    """
+    Train a Deep CFR agent with opponent modeling.
+    
+    Args:
+        num_iterations: Number of CFR iterations
+        traversals_per_iteration: Number of game traversals per iteration
+        num_players: Number of players in the game
+        player_id: ID of the player to train
+        save_dir: Directory to save models
+        log_dir: Directory for TensorBoard logs
+        verbose: Enable verbose output
+        use_wandb: Whether to use Weights & Biases for logging
+        wandb_project: WandB project name
+        wandb_mode: WandB mode ("online", "offline", "disabled")
+    """
     # Set verbosity
     set_verbose(verbose)
     
@@ -196,6 +214,20 @@ def train_deep_cfr_with_opponent_modeling(
     
     # Initialize tensorboard writer
     writer = SummaryWriter(log_dir)
+    
+    # Initialize WandB if enabled
+    if use_wandb:
+        # Configure WandB
+        config = {
+            "model_type": "DeepCFR",
+            "training_mode": "opponent_modeling",
+            "player_id": player_id,
+            "num_players": num_players,
+            "iterations": num_iterations,
+            "traversals_per_iteration": traversals_per_iteration,
+            "device": 'cuda' if torch.cuda.is_available() else 'cpu'
+        }
+        init_wandb(config, project_name=wandb_project, mode=wandb_mode)
     
     # Initialize Telegram notifier
     try:
@@ -256,12 +288,20 @@ def train_deep_cfr_with_opponent_modeling(
         traversal_time = time.time() - start_time
         writer.add_scalar('Time/Traversal', traversal_time, iteration)
         
+        # Log to WandB
+        if use_wandb:
+            wandb.log({"Time/Traversal": traversal_time}, step=iteration)
+        
         # Train advantage network
         print("  Training advantage network...")
         adv_loss = agent.train_advantage_network()
         advantage_losses.append(adv_loss)
         print(f"  Advantage network loss: {adv_loss:.6f}")
         writer.add_scalar('Loss/Advantage', adv_loss, iteration)
+        
+        # Log to WandB
+        if use_wandb:
+            wandb.log({"Loss/Advantage": adv_loss}, step=iteration)
         
         # Every few iterations, train the strategy network
         if iteration % 5 == 0 or iteration == num_iterations:
@@ -270,6 +310,10 @@ def train_deep_cfr_with_opponent_modeling(
             strategy_losses.append(strat_loss)
             print(f"  Strategy network loss: {strat_loss:.6f}")
             writer.add_scalar('Loss/Strategy', strat_loss, iteration)
+            
+            # Log to WandB
+            if use_wandb:
+                wandb.log({"Loss/Strategy": strat_loss}, step=iteration)
         
         # Train opponent modeling periodically
         if iteration % 10 == 0 or iteration == num_iterations:
@@ -279,6 +323,10 @@ def train_deep_cfr_with_opponent_modeling(
                 opponent_model_losses.append(opp_loss)
                 print(f"  Opponent modeling loss: {opp_loss:.6f}")
                 writer.add_scalar('Loss/OpponentModeling', opp_loss, iteration)
+                
+                # Log to WandB
+                if use_wandb:
+                    wandb.log({"Loss/OpponentModeling": opp_loss}, step=iteration)
             except Exception as e:
                 print(f"Error training opponent model: {e}")
                 if notifier:
@@ -291,6 +339,10 @@ def train_deep_cfr_with_opponent_modeling(
             profits.append(avg_profit)
             print(f"  Average profit per game: {avg_profit:.2f}")
             writer.add_scalar('Performance/Profit', avg_profit, iteration)
+            
+            # Log to WandB
+            if use_wandb:
+                wandb.log({"Performance/Profit": avg_profit}, step=iteration)
             
             # Send progress update
             if notifier:
@@ -307,6 +359,14 @@ def train_deep_cfr_with_opponent_modeling(
             agent.save_model(checkpoint_path)
             print(f"  Checkpoint saved to {checkpoint_path}")
             
+            # Log model to WandB
+            if use_wandb:
+                log_model(
+                    checkpoint_path, 
+                    f"om_checkpoint_iter_{iteration}", 
+                    f"DeepCFR with Opponent Modeling checkpoint at iteration {iteration}"
+                )
+            
             # Add Telegram notification
             if notifier and iteration % 100 == 0:  # Less frequent notifications
                 notifier.send_message(f"💾 <b>CHECKPOINT SAVED</b> at iteration {iteration}")
@@ -321,8 +381,22 @@ def train_deep_cfr_with_opponent_modeling(
         writer.add_scalar('OpponentModeling/NumOpponents', num_opponents, iteration)
         writer.add_scalar('OpponentModeling/TotalHistoryEntries', total_history_entries, iteration)
         
+        # Log to WandB
+        if use_wandb:
+            wandb.log({
+                'Memory/Advantage': len(agent.advantage_memory),
+                'Memory/Strategy': len(agent.strategy_memory),
+                'OpponentModeling/NumOpponents': num_opponents,
+                'OpponentModeling/TotalHistoryEntries': total_history_entries
+            }, step=iteration)
+        
         elapsed = time.time() - start_time
         writer.add_scalar('Time/Iteration', elapsed, iteration)
+        
+        # Log to WandB
+        if use_wandb:
+            wandb.log({"Time/Iteration": elapsed}, step=iteration)
+        
         print(f"  Iteration completed in {elapsed:.2f} seconds")
         print(f"  Tracking data for {num_opponents} unique opponents")
         print()
@@ -332,6 +406,23 @@ def train_deep_cfr_with_opponent_modeling(
     avg_profit = evaluate_against_random(agent, num_games=1000, iteration=num_iterations, notifier=notifier)
     print(f"Final performance: Average profit per game: {avg_profit:.2f}")
     writer.add_scalar('Performance/FinalProfit', avg_profit, 0)
+    
+    # Log to WandB
+    if use_wandb:
+        wandb.log({"Performance/FinalProfit": avg_profit})
+        
+        # Create a final model artifact
+        final_checkpoint_path = f"{save_dir}/om_checkpoint_final.pt"
+        agent.save_model(final_checkpoint_path)
+        
+        log_model(
+            final_checkpoint_path, 
+            "om_checkpoint_final", 
+            f"Final DeepCFR with Opponent Modeling checkpoint after {num_iterations} iterations"
+        )
+        
+        # Finish the WandB run
+        finish()
     
     # Send final notification
     if notifier:
@@ -355,12 +446,30 @@ if __name__ == "__main__":
     parser.add_argument('--traversals', type=int, default=200, help='Traversals per iteration')
     parser.add_argument('--save-dir', type=str, default='models_om', help='Directory to save models')
     parser.add_argument('--log-dir', type=str, default='logs/deepcfr_om', help='Directory for logs')
+    
+    # Add WandB arguments
+    parser.add_argument('--use-wandb', action='store_true', help='Use Weights & Biases for logging')
+    parser.add_argument('--no-wandb', action='store_true', help='Disable Weights & Biases logging')
+    parser.add_argument('--wandb-project', type=str, default='deepcfr-poker', help='WandB project name')
+    parser.add_argument('--wandb-entity', type=str, default=None, help='WandB entity name')
+    parser.add_argument('--wandb-mode', type=str, default='online', 
+                      choices=['online', 'offline', 'disabled'], 
+                      help='WandB logging mode')
+    parser.add_argument('--wandb-tags', type=str, nargs='+', default=['opponent_modeling'], help='Tags for WandB run')
+    
     args = parser.parse_args()
+    
+    # Determine whether to use WandB based on args
+    # If --no-wandb is specified, disable WandB even if --use-wandb is specified
+    use_wandb = args.use_wandb and not args.no_wandb
     
     print(f"Starting Deep CFR training with opponent modeling for {args.iterations} iterations")
     print(f"Using {args.traversals} traversals per iteration")
     print(f"Logs will be saved to: {args.log_dir}")
     print(f"Models will be saved to: {args.save_dir}")
+    
+    if use_wandb:
+        print(f"Using Weights & Biases for logging (project: {args.wandb_project}, mode: {args.wandb_mode})")
     
     # Train the agent
     agent, adv_losses, strat_losses, om_losses, profits = train_deep_cfr_with_opponent_modeling(
@@ -368,7 +477,10 @@ if __name__ == "__main__":
         traversals_per_iteration=args.traversals,
         save_dir=args.save_dir,
         log_dir=args.log_dir,
-        verbose=args.verbose
+        verbose=args.verbose,
+        use_wandb=use_wandb,
+        wandb_project=args.wandb_project,
+        wandb_mode=args.wandb_mode
     )
     
     print("\nTraining Summary:")
@@ -384,3 +496,6 @@ if __name__ == "__main__":
     print("\nTo view training progress:")
     print(f"Run: tensorboard --logdir={args.log_dir}")
     print("Then open http://localhost:6006 in your browser")
+    
+    if use_wandb:
+        print(f"WandB dashboard: https://wandb.ai/{args.wandb_entity or 'your-entity'}/{args.wandb_project}")

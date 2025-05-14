@@ -1,0 +1,35 @@
+[project]
+name = "deepcfr-poker"
+version = "0.1.0"
+description = "Deep Counterfactual Regret Minimization for Poker"
+authors = [
+    {name = "Max Pfeiffer"}
+]
+readme = "README.md"
+requires-python = ">=3.9,<3.12"
+dependencies = [
+    "torch (==2.5.1)",
+    "numpy (==1.26.4)",
+    "matplotlib (==3.9.0)",
+    "tensorboard (==2.18.0)",
+    "argparse (>=1.4.0,<2.0.0)",
+    "tqdm (==4.67.0)",
+    "python-dotenv (==1.0.1)",
+    "requests (==2.32.3)",
+    "seaborn (==0.13.2)",
+    "pandas (==2.2.2)",
+    "pyqt5 (==5.15.11)",
+    "wandb (>=0.19.9,<0.20.0)",
+    "pokers @ git+https://github.com/Reinforcement-Poker/pokers.git"
+]
+
+[tool.poetry]
+name = "deepcfr-poker"
+version = "0.1.0"
+packages = [
+    { include = "src" }
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
